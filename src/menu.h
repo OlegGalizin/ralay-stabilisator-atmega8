@@ -12,7 +12,6 @@
 #include <stdint.h>
 #include <inttypes.h>
 
-
 #define EV_KEY_TOUCH    0x01
 #define EV_KEY_PRESSED  0x02 
 #define EV_KEY_LONG     0x03
@@ -22,9 +21,9 @@
 #define EV_MASK         0x07
 
 #define WAS_NO_EVENT        ((IE1 & WDTIE) == 0)
-extern uint8_t Event;  /* 0xKKKKKAAA */
+extern uint8_t Event;  /* 0xKKKK KAAA */
 /* AAA - it is event key. Event can be defined by & operation with EV_MASK*/
-/* KKKKKK - keys - one bit fpr one key. Up to 5 keys */
+/* KKKKKK - keys - one bit for one key. Up to 5 keys */
 
 extern uint8_t MenuCounter;
 /* Additional variable should be used in every code */
@@ -44,16 +43,16 @@ extern const MenuFunction_t FuncArray[]; // Array of functions of the menu
 void MenuCheckEvent(void);
 void MenuInit(void);
 
-#define KEYPORT PIND
+#define KEYPORT PINC
 
-#define KEY1  _BV(PD5)  //S3
-#define KEY2  _BV(PD7)  //S1
-#define KEY3  _BV(PD6)  //S2
+#define KEY1  _BV(PC3)  //Down
+#define KEY2  _BV(PC5)  //Up
+#define KEY3  _BV(PC4)  //Enter
 #define KEY_MASK (KEY1 | KEY2 | KEY3 )
 
-#define KEY_UP 	        KEY3
-#define KEY_ENTER 	KEY2
-#define KEY_DOWN 	KEY1
+#define KEY_DOWN    KEY1
+#define KEY_UP 	    KEY2
+#define KEY_ENTER   KEY3
 
 #endif
 

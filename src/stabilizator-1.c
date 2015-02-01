@@ -10,45 +10,41 @@
 #include <stdint.h>
 #include <inttypes.h>
 
+
+#define DEBUG_EE
+//#define DISPLAY_OA
+
+#define DEFAULT_MAX 240
+#define DEFAULT_MIN 190
+
+
+
 #include "menu.h"
 
 #define F_CPU 8000000UL  
 
-#define Coeff 16  //Коэффициент пропорциональности напряжения
+#define Coeff (16/3.04)  //Коэффициент пропорциональности напряжения
 #define RmsP2(V) ((unsigned int)(((double)V)*V/Coeff/Coeff)) // макрос перевода вольт в попугаи
 
-#define PinOn _BV(PC5)   // пин реле включения нагрузки
-#define Pin_235 _BV(PD0) // пин реле если сеть больше 238В
-#define Pin_200 _BV(PD1) // пин реле если сеть меньше 200В
-#define Pin_180 _BV(PD3) // пин реле если сеть меньше 180В
+#define PinOn _BV(PB1)   // пин реле включения нагрузки
+#define PinOnPORT PORTB
 
 static  void check_keys(void);
 
-char CurrentLast = 0;//Где в массиве лежит последнее значение
-char Diapazon = 0; 	//текущий диапазон 0-выкл, 1=+20%, 2=+10%, 3=+0%, 4=-10%
+unsigned char CurrentDigit; // Текущая отображаемая цифра
+volatile uint8_t Display[3]; //отображаемые цифры ( диапазон 0 - 9)
 
-EEMEM uint16_t ee_U_max = 245; // F5 максимальное наряжение сети
-EEMEM uint16_t ee_U_235 = 235; // EB
-EEMEM uint16_t ee_U_228 = 228; // E4
-EEMEM uint16_t ee_U_210 = 215; // D7
-EEMEM uint16_t ee_U_200 = 205; // CD
-EEMEM uint16_t ee_U_190 = 195; // C3
-EEMEM uint16_t ee_U_180 = 185; // B9
-EEMEM uint16_t ee_U_min = 160; 	 // A0 минимальное напряжение сети
-EEMEM uint16_t ee_zadergka = 100; // 64 времья задержки на включение
-EEMEM uint16_t ee_filter = 50;	 // 32 времья нечувствительности колебаний сетевого напряжения
+uint8_t CurrentLast = 0;//Где в массиве лежит последнее значение
 
-volatile uint16_t U_235; //поддиаппазон 235
-volatile uint16_t U_228; //поддиаппазон 228
-volatile uint16_t U_210; //поддиаппазон 210
-volatile uint16_t U_200; //поддиаппазон 200
-volatile uint16_t U_190; //поддиаппазон 190
-volatile uint16_t U_180; //поддиаппазон 180
+EEMEM uint16_t ee_U_max = DEFAULT_MAX;		//максимальное наряжение сети
+EEMEM uint16_t ee_U_min = DEFAULT_MIN;		//минимальное напряжение сети
+EEMEM uint16_t ee_zadergka = 100;	//времья задержки на включение
+EEMEM uint16_t ee_filter = 0;		//времья нечувствительности колебаний сетевого напряжения
 
-volatile uint16_t U_max; //максимальное наряжение сети
+volatile uint16_t U_max;  //максимальное наряжение сети
 volatile uint16_t U_min; //минимальное напряжение сети
-volatile uint16_t U_maxUE; //максимальное наряжение сети уже в попугаях
-volatile uint16_t U_minUE; //минимальное напряжение сети уже в попугаях
+volatile uint16_t U_maxUE;  //максимальное наряжение сети
+volatile uint16_t U_minUE; //минимальное напряжение сети
 volatile uint16_t zadergka; // Задержка включения нагрузки после аварии
 volatile uint16_t t_filter; // времья нечуствительности колебаний сетевого напряжения
 
@@ -56,24 +52,50 @@ volatile int Timer = 0; // Таймер задержки включения: 50 периодов  - 1 сек , 250
 volatile int tm1 = 0;
 volatile char key_code = 0;
 
-#define SEG_A 0x01
-#define SEG_B 0x02
-#define SEG_C 0x04
-#define SEG_D 0x08
-#define SEG_E 0x10
-#define SEG_F 0x20
-#define SEG_G 0x40
-#define SEG_H 0x80
+
+
+#define SHIFT595 _BV(PD7)
+#define DATA595  _BV(PD5)
+#define STORE595 _BV(PD6)
+
+#define SHIFT595PORT PORTD
+#define DATA595PORT  PORTD
+#define STORE595PORT PORTD
+#define DIG1 _BV(PD0)
+#define DIG2 _BV(PD1)
+#define DIG3 _BV(PD2)
+#define DIG4 _BV(PD4)
+#define DIGPORT PORTD
+
+
+
+#define SEG_A 0x04
+#define SEG_B 0x01
+#define SEG_C 0x40
+#define SEG_D 0x10
+#define SEG_E 0x08
+#define SEG_F 0x02
+#define SEG_G 0x80
+#define SEG_H 0x20
 #define SEG_DOT SEG_H
 
-unsigned char CurrentDigit; // Текущая отображаемая цифра
-volatile unsigned char Display[3]; //отображаемые цифры ( диапазон 0 - 9)
-
-// Общий катод,  размещение  сегментов в разрядах  -  hgfedcba
 const unsigned char digit[11]=
-{0x3F,0x06,0x5B,0x4F,0x66,0x6D,0x7D,0x07,0x7F,0x6F,0x00,}; // 0 1 2 3 4 5 6 7 8 9 откл.  
-const unsigned char DigitLine[3] = {0x4,0x8,0x10}; //Какую цифру отображать
-
+{SEG_A|SEG_B|SEG_C|SEG_D|SEG_E|SEG_F, //0
+ SEG_B|SEG_C, //1
+ SEG_A|SEG_B|SEG_D|SEG_E|SEG_G, //2
+ SEG_A|SEG_B|SEG_C|SEG_D|SEG_G, //3
+ SEG_B|SEG_C|SEG_F|SEG_G, //4
+ SEG_A|SEG_C|SEG_D|SEG_F|SEG_G,//5
+ SEG_A|SEG_C|SEG_D|SEG_E|SEG_F|SEG_G, //6
+ SEG_A|SEG_B|SEG_C,//7
+ SEG_A|SEG_B|SEG_C|SEG_D|SEG_E|SEG_F|SEG_G, //8
+ SEG_A|SEG_B|SEG_C|SEG_D|SEG_F|SEG_G,//9
+ 0x00,}; // откл.  
+#if !defined(DISPLAY_OA)
+const unsigned char DigitLine[3] = {~DIG3, ~DIG1, ~DIG2 }; //Какую цифру отображать                                                                  
+#else
+const unsigned char DigitLine[3] = {DIG3, DIG1, DIG2 }; //Какую цифру отображать                                                                  
+#endif
 long Summ; // Накопитель квадратов
 volatile long LastSumm; // Здесь накопленный результат передается в main
 int Counts; //Накопитель количества измерений
@@ -87,261 +109,167 @@ int  LastValues[16] = {0x400,0x400,0x400,0x400,0x400,0x400,0x400,0x400,
                        0x400,0x400,0x400,0x400,0x400,0x400,0x400,0x400};
 
 int8_t DisplayCounter; //Счетчик времни отображения индикации
-int8_t flash_display = 0; // счетчик для мигания индикатором
  
 static void Decoder_display(int DataForLed) //Преобразование числа в строку для отображения
 {
   int Div = 100;
-  unsigned char* Pointer = Display;
+  uint8_t* Pointer = Display;
   char i = 3;
   char OnFlag = 0;
-  
+
   while (i)
-   {
-     char Dig = DataForLed/Div;
+  {
+     uint8_t Dig = DataForLed/Div;
 
      if ( Dig == 0 && OnFlag == 0)
-      {
+     {
        *Pointer = 0; //отключить незначущийся ноль
-      }
+     }
      else
-      {
+     {
        *Pointer = digit[Dig];
        OnFlag = 1;
-      }
+     }
      Pointer++;
      i--;
      DataForLed = DataForLed%Div;
      Div = Div/10;
-   } //while
+  } //while
 }
 
-static unsigned char RelayCounter;
-
-#define CheckRelay() RelayCounter++; \
-  if ( RelayCounter < t_filter ) return;
-  
-#define ClearRelay() RelayCounter = 0;
+uint8_t RelayCounter;
 
 static void Regulator (void)
 {
+  if ( ImmediateValue > (U_maxUE) || 
+       ImmediateValue < (U_minUE) )
+  {
+    if ( RelayCounter < t_filter ) //Задержка отключения
+    {
+      RelayCounter++;
+      return;	  
+    }
+    goto D0;
+  }
+  RelayCounter=0;
+
+
   if ( Timer < zadergka ) // 5 сек. задержка: 50 периодов=1 сек, 250 = 5 сек
   {
     Timer = Timer + 1;
-  }
-  else
-  {   
-    switch (Diapazon)
-    {
-      case 1: //Входное 228 - U_max вольт
-        if ( ImmediateValue > (U_maxUE) )
-        {
-         CheckRelay();
-         goto D0;
-        }
-        if ( ImmediateValue < U_228)
-        {
-         CheckRelay();
-         goto D2;
-        }
-        ClearRelay();
-        return;
-      case 2: //Входное 200 - 235 вольт
-        if ( ImmediateValue > U_235)
-        {
-         CheckRelay();
-         goto D1;
-        }
-        if ( ImmediateValue < U_200)
-        {
-         CheckRelay();
-         goto D3;
-        }
-        ClearRelay();
-        return;
-      case 3: //Входное 180 - 210 вольт
-        if ( ImmediateValue > U_210)
-        {
-         CheckRelay();
-         goto D2;
-        }
-        if ( ImmediateValue < U_180)
-        {
-         CheckRelay();
-         goto D4;
-        }
-        ClearRelay();
-        return;
-      case 4: //Входное U_min - 190 вольт
-        if ( ImmediateValue > U_190)
-        {
-         CheckRelay();
-         goto D3;
-        }
-        if ( ImmediateValue < (U_minUE) )
-        {
-         CheckRelay();
-         goto D0;
-        }
-        ClearRelay();
-        return;
-        
-      default:
-        if ((ImmediateValue > U_235) && (ImmediateValue < (U_maxUE-5))) // U_max-5
-         goto D1;
-        if ((ImmediateValue > U_200) && (ImmediateValue < U_235))
-         goto D2;
-        if ((ImmediateValue < U_200) && (ImmediateValue > U_180))
-         goto D3;
-        if ((ImmediateValue < U_180) && (ImmediateValue > (U_minUE+5))) // U_min+5
-         goto D4;
-        Timer = 0;         // Сброс таймера задержки включения
-      } // switch
-    } // if
-    
     return;
+  }
    
-D1: // Включение 1 диапазона 228 - U_max
-  PORTD |= Pin_235;  // включить реле   -20В
-  PORTD &= ~Pin_200; // отключить реле   +20В
-  PORTD &= ~Pin_180; // отключить реле   +40В
-  Diapazon = 1;
-  PORTC |= PinOn;    // Включить выход
-  goto DisplayVoltage;
-D2: // Включение 2 диапазона 200 - 235
-  PORTD &= ~Pin_235; // отключить реле   -20В
-  PORTD &= ~Pin_200; // отключить реле   +20В
-  PORTD &= ~Pin_180; // отключить реле   +40В
-  Diapazon = 2;
-  PORTC |= PinOn;    // Включить выход
-  goto DisplayVoltage;
-D3: // Включение 3 диапазона 180 - 210
-  PORTD &= ~Pin_235;  // отключить реле   -20В
-  PORTD |= Pin_200;   // включить реле   +20В
-  PORTD &= ~Pin_180;  // отключить реле   +40В
-  Diapazon = 3;
-  PORTC |= PinOn;    // Включить выход
-  goto DisplayVoltage;
-D4: // Включение 4 диапазона U_min - 190
-  PORTD &= ~Pin_235;  // отключить реле   -20В
-  PORTD |= Pin_200; 	 // включить реле   +20В
-  PORTD |= Pin_180; 	 // включить реле   +40В
-  Diapazon = 4;
-  PORTC |= PinOn;    // Включить выход
-  goto DisplayVoltage;
-D0: // Включение 0 диапазона - все выключено
-  Timer = 0;         // Сброс таймера задержки включения
-  Diapazon = 0;
-  PORTC &= ~PinOn;   // ОТКЛЮЧИТЬ ВСЕ РЕЛЕ И НАГРУЗКУ!!!
-  PORTD &= ~Pin_235; // отключить реле   -20В
-  PORTD &= ~Pin_200; // отключить реле   +20В
-  PORTD &= ~Pin_180; // отключить реле   +40В
 
-DisplayVoltage:
-{
-   uint16_t Out = (uint16_t)(sqrt(ImmediateValue)*Coeff); //Out moving average value
-   Decoder_display(Out);
-   Display[2] |= SEG_DOT;
-   DisplayCounter = -100;
+  PinOnPORT |= PinOn;    // Включить выход
+//  {
+//    uint16_t Out = (uint16_t)(sqrt(ImmediateValue)*Coeff); //Out moving average value
+
+//    Decoder_display(Out);
+//    Display[2] |= SEG_DOT;
+//    DisplayCounter = -100;
+//  }
+  return;
+
+D0: // все выкл
+  Timer = 0;         // Сброс таймера задержки включения
+  RelayCounter = 0;
+  PinOnPORT &= ~PinOn;   // ОТКЛЮЧИТЬ ВСЕ РЕЛЕ И НАГРУЗКУ!!!
 }
-} // end Regulator
+
 
 static void Init (void)
 {
 // Input/Output Ports initialization
 // Port B initialization
-   PORTB=0x00;
-   DDRB=0xFF;
+	PORTB=0x00;
+	DDRB=PinOn;
 
 // Port C initialization
-   PORTC=0x00; // PORTC=0x03 поддтяжка включенна!!! для АЦП лучше выключить, т.е. PORTC=0x00
-   DDRC=0x3C; // 0011 1100
+	PORTC=~_BV(PC0); // PC0 - АЦП без подтяжки
+	DDRC=0x02; // ALARM is out
 
 // Port D initialization
-   PORTD=0xE4;
-   DDRD=0x1B; // 0001 1011    PinOn | Pin_235 | Pin_200 | Pin_180;
-
+#if !defined(DISPLAY_OA)
+	PORTD=0xFF;                                                         
+#else
+	PORTD=0x00;                                                         
+#endif
+	DDRD=0xFF; // All out
+	
 // Timer/Counter 0 initialization
-   TCCR0=0x00;
-   TCNT0=0;
+	TCCR0=0x00;
+	TCNT0=0;
 
 // Timer/Counter 1 initialization
-   TCCR1A=0x00; TCCR1B=0x00;	TCNT1H=0x00; TCNT1L=0x00; ICR1H=0x00; ICR1L=0x00; OCR1AH=0x00;
-   OCR1AL=0x00; OCR1BH=0x00; OCR1BL=0x00;
-   
+	TCCR1A=0x00;
+	TCCR1B=0x00;
+	TCNT1H=0x00;
+	TCNT1L=0x00;
+	ICR1H=0x00;
+	ICR1L=0x00;
+	OCR1AH=0x00;
+	OCR1AL=0x00;
+	OCR1BH=0x00;
+	OCR1BL=0x00;
+
 // Timer/Counter 2 initialization
-   ASSR=0x00;
-   TCCR2=0x00;
-   TCNT2=0x00;
-   OCR2=0x00;
+	ASSR=0x00;
+	TCCR2=0x00;
+	TCNT2=0x00;
+	OCR2=0x00;
 
 // External Interrupt(s) initialization
-   MCUCR=0x00;
+	MCUCR=0x00;
 
 // Timer(s)/Counter(s) Interrupt(s) initialization
-   TIMSK=0x00;
+	TIMSK=0x00;
 
 // Analog Comparator initialization
-   ACSR=0x80;
-   SFIOR=0x00;
+	ACSR=0x80;
+	SFIOR=0x00;
 
 // ADC initialization
 // ADC Clock frequency: 125,000 kHz
 // ADC Voltage Reference: Int., cap. on AREF
-   ADMUX=_BV(REFS1)|_BV(REFS0); /* 2.56v reference & ADC0 */
-   ADCSRA=_BV(ADEN)|_BV(ADSC)|_BV(ADFR)|_BV(ADIE)|_BV(ADPS1)|_BV(ADPS2);  // div64
+	ADMUX=_BV(REFS1)|_BV(REFS0); /* 2.56v reference & ADC0 */
+	ADCSRA=_BV(ADEN)|_BV(ADSC)|_BV(ADFR)|_BV(ADIE)|_BV(ADPS1)|_BV(ADPS2);  // div64
 // ADCSRA=_BV(ADEN)|_BV(ADSC)|_BV(ADFR)|_BV(ADIE)|_BV(ADPS0)|_BV(ADPS2);  // div32
 
-   U_max = eeprom_read_word( &ee_U_max);
-      if ( U_max == 0xFFFF )
-      {
-         U_max = 245;
-      }
-   U_maxUE = RmsP2(U_max);
+#if !defined(DEBUG_EE)
+	U_max = eeprom_read_word( &ee_U_max);
+        if ( U_max == 0xFFFF )
+#endif
+        {
+          U_max = DEFAULT_MAX;
+        }
+        U_maxUE = RmsP2(U_max);
 
-   U_min = eeprom_read_word( &ee_U_min);
-      if ( U_min == 0xFFFF )
-      {
-         U_min = 160;
-      }
-   U_minUE = RmsP2(U_min);
-
-   zadergka = eeprom_read_word( &ee_zadergka);
-      if ( zadergka == 0xFFFF )
-      {
-         zadergka = 100;
-      }
-   
-   t_filter = eeprom_read_word( &ee_filter);
-      if ( t_filter == 0xFFFF )
-      {
-         t_filter = 50;
-      }
-
-  U_235 = RmsP2 (eeprom_read_word( &ee_U_235));
-  if ( U_235 == 0xFFFF )
-    U_235 = RmsP2(235);
-    
-  U_228 = RmsP2 (eeprom_read_word( &ee_U_228));
-  if ( U_228 == 0xFFFF )
-    U_228 = RmsP2(228);
-    
-  U_210 = RmsP2 (eeprom_read_word( &ee_U_210));
-  if ( U_210 == 0xFFFF )
-    U_210 = RmsP2(210);
-    
-  U_200 = RmsP2 (eeprom_read_word( &ee_U_200));
-  if ( U_200 == 0xFFFF )
-    U_200 = RmsP2(200);
-    
-  U_190 = RmsP2 (eeprom_read_word( &ee_U_190));
-  if ( U_190 == 0xFFFF )
-    U_190 = RmsP2(190);
-    
-  U_180 = RmsP2 (eeprom_read_word( &ee_U_180));
-  if ( U_180 == 0xFFFF )
-    U_180 = RmsP2(180);
-} // end Init
+#if !defined(DEBUG_EE)
+	U_min = eeprom_read_word( &ee_U_min);
+        if ( U_min == 0xFFFF )
+#endif
+        {
+          U_min = DEFAULT_MIN;
+        }
+        U_minUE = RmsP2(U_min);
+		  
+#if !defined(DEBUG_EE)
+	zadergka = eeprom_read_word( &ee_zadergka);
+        if ( zadergka == 0xFFFF )
+#endif
+        {
+          zadergka = 100;
+        }
+	
+#if !defined(DEBUG_EE)
+	t_filter = eeprom_read_word( &ee_filter);
+        if ( t_filter == 0xFFFF )
+#endif
+        {
+          t_filter = 0;
+        }
+}
 
 long AvSum16=580000L;  // это усредненное значение
 uint16_t  AvCount16 = 200*16;// Усредненное количество отсчетов
@@ -428,7 +356,7 @@ redraw:
   }
   else
     DisplayCounter++;
-} // end HiFunction
+}
 
 
 void LoFunction(void)
@@ -463,7 +391,7 @@ void LoFunction(void)
   {
     if ( (Event & KEY_MASK) == KEY_UP )
     {
-      if ( Value < 179 )
+      if ( Value < 220 )
         Value++;
     }
     else if ( (Event & KEY_MASK) == KEY_DOWN )
@@ -471,7 +399,7 @@ void LoFunction(void)
       if ( Value > 100 )
         Value--;
     }
-  } // end LoFunction
+  }
 
 redraw:
   if (DisplayCounter >= 0 )
@@ -540,6 +468,7 @@ void DelayFunction(void)
     }
   }
 
+
 redraw:
   if (DisplayCounter >= 0 )
   { 
@@ -548,7 +477,8 @@ redraw:
   }
   else
     DisplayCounter++;
-} // end DelayFunction
+    
+}
 
 void FilterFunction(void)
 {
@@ -587,7 +517,7 @@ void FilterFunction(void)
     }
     else if ( (Event & KEY_MASK) == KEY_DOWN )
     {
-      if ( Value > 0 )
+      if ( Value >= 0 )
         Value--;
     }
   }
@@ -600,7 +530,7 @@ redraw:
   }
   else
     DisplayCounter++;
-} // end FilterFunction
+}
 
 void MainFunction(void)
 {
@@ -608,12 +538,12 @@ void MainFunction(void)
 
   if (Event == EV_FUNC_FIRST)
   {
-    DisplayCounter = 15; // ---- 15
+    DisplayCounter = 16;
     goto redraw;
   }
   if ( (Event & EV_MASK) == EV_KEY_PRESSED )
   {
-    if ( (Event & KEY_MASK) == KEY_ENTER )
+    if ( (Event & KEY_MASK) == KEY_DOWN )
     {
       CurrentFunc = HERTZ_FUNCTION;
       return;
@@ -624,23 +554,16 @@ void MainFunction(void)
   }
 
 redraw:
-  if (DisplayCounter > 8 )  // ------  15
-  {
-    Out = (int)(sqrt((double)AvSum16/AvCount16)*Coeff); //Out moving average value
+  Out = (int)(sqrt((double)AvSum16/AvCount16)*Coeff); //Out moving average value
+
+  if (DisplayCounter > 15 )
+  { 
     Decoder_display(Out);
-    DisplayCounter = -8;
+    DisplayCounter = 0;
   }
   else
-  {
     DisplayCounter++;
-    if (Diapazon == 0 && DisplayCounter > 0)
-    {
-      Display[0] = 0;
-      Display[1] = 0;
-      Display[2] = 0;
-    }
-  }
-}  // end MainFunction
+}
 
 void HertzFunction(void)
 {
@@ -648,7 +571,7 @@ void HertzFunction(void)
 
   if (Event == EV_FUNC_FIRST)
   {
-    DisplayCounter = 15; // --- 15
+    DisplayCounter = 16;
     goto redraw;
   }
   if ( (Event & EV_MASK) == EV_KEY_PRESSED )
@@ -658,25 +581,18 @@ void HertzFunction(void)
   }
 
 redraw:
+  Out = (125000l*16*10/13)/AvCount16;
 
-  if (DisplayCounter > 8 )  // ------  15
-  {
-    Out = (125000l*16*10/13)/AvCount16;
+  if (DisplayCounter > 15 )
+  { 
     Decoder_display(Out);
     Display[1] |= SEG_DOT;
-    DisplayCounter = -8;
+    DisplayCounter = 0;
   }
   else
-  {
     DisplayCounter++;
-    if (Diapazon == 0 && DisplayCounter > 0)
-    {
-      Display[0] = 0;
-      Display[1] = 0;
-      Display[2] = 0;
-    }
-  }
-} // end HertzFunction
+}
+
 
 static void MenuFunction(void)
 {
@@ -751,13 +667,17 @@ redraw:
      Display[1] = SEG_E; // i
      break;
   }
-}  //  and MenuFunction
+}
+
 
 const MenuFunction_t FuncArray[] = {MainFunction, 
   HertzFunction,MenuFunction, HiFunction, LoFunction,
   DelayFunction,FilterFunction,SavedFunction}; // Array of functions of the menu
 
+
+
 //*********************************************************
+
 
 void main(void)
 {
@@ -891,7 +811,9 @@ static  void check_keys(void)
       EvCounter++; // Delay counter increasing
     }
   }
-} // end check_Keys
+}
+
+int8_t Counter595;
 
 ISR (ADC_vect)
 {
@@ -902,8 +824,8 @@ ISR (ADC_vect)
 
   Summ = Summ + ((long)AdcValue)*AdcValue;//Вычисляем сумму квадратов
   LastValues[CurrentLast] = AdcValue; //сохраняем последнее значение
-  LastValues[CurrentLast+8] = AdcValue; //дважды
-  ADCSRA|=0x40;
+  LastValues[CurrentLast+8] = AdcValue; //дважды что бы взвешенную сумму считать линейно
+//  ADCSRA|=0x40; // Нафига снова запускать?
 
   if ( Counts > 130 ) // прошло больше чем половина второго полпериода (96)
   {
@@ -912,7 +834,7 @@ ISR (ADC_vect)
        (LastValues[CurrentLast+2] + LastValues[CurrentLast + 7]) * 2 +
        (LastValues[CurrentLast+3] + LastValues[CurrentLast + 6]) * 3 +
        (LastValues[CurrentLast+4] + LastValues[CurrentLast + 5]) * 4; 
-        
+		  
      if ( MaxWv <= Wv && Counts < 900 ) // мы еще не перевалили максимум в полупериоде
       {
          MaxWv = Wv; 		// сохранить новое максимальное значение
@@ -939,12 +861,43 @@ ISR (ADC_vect)
   CurrentLast = (CurrentLast + 1) & 0x7; /* from 0 to 7 */
 
   //Обновление индикатора
-  PORTB = 0; //отключили все сегменты - аноды
-  PORTC &= 0xE3;//отключили все сегменты общие - катоды
- 
-  PORTB = Display[CurrentDigit]; // установили в 1 сегменты соотв цифре
-  PORTC |= DigitLine[CurrentDigit]; //подключили соотв общий катод
-  CurrentDigit++; // Следующий раз отобразить следующую цифру
-  if ( CurrentDigit >= 3 ) // и так по кругу
-    CurrentDigit = 0;
+  SHIFT595PORT &= ~SHIFT595;
+  if (Counter595 >= 0 )
+  {
+    uint8_t BitsToShift = Display[CurrentDigit];
+#if !defined(DISPLAY_OA)
+    if ( BitsToShift & (1<<Counter595))
+#else
+    if ( !(BitsToShift & (1<<Counter595)))
+#endif
+    {
+      DATA595PORT |= DATA595;
+    }
+    else
+    {
+      DATA595PORT &= ~DATA595;
+    }
+    Counter595--;
+    SHIFT595PORT |= SHIFT595; // shift the data into serial register 595
+  }
+  else
+  {
+    STORE595PORT &= ~STORE595;
+#if !defined(DISPLAY_OA)
+    DIGPORT |= (DIG1|DIG2|DIG3);//отключили все общие - катоды
+#else
+    DIGPORT &= ~(DIG1|DIG2|DIG3);//отключили все общие - аноды
+#endif
+    Counter595 = 7;
+    STORE595PORT |= STORE595;
+
+    CurrentDigit++; // Следующий раз отобразить следующую цифру
+    if ( CurrentDigit >= 3 ) // и так по кругу
+      CurrentDigit = 0;
+#if !defined(DISPLAY_OA)
+    DIGPORT &= DigitLine[CurrentDigit]; //подключили соотв общий катод
+#else
+    DIGPORT |= DigitLine[CurrentDigit]; //подключили соотв общий катод
+#endif
+  }
 }
