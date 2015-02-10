@@ -1,3 +1,8 @@
+//#define DEBUG_EE
+//#define DISPLAY_OA
+#define DISPLAY_N3310
+
+
 #include <avr/io.h>
 #include <avr/interrupt.h> 
 #include <math.h>
@@ -9,30 +14,45 @@
 #include <avr/wdt.h>
 #include <stdint.h>
 #include <inttypes.h>
+#if defined(DISPLAY_N3310)
+#include "n3310.h"
+#endif
 
 
-#define DEBUG_EE
-//#define DISPLAY_OA
-
-#define DEFAULT_MAX 240
-#define DEFAULT_MIN 190
-
+#define DEFAULT_MAX 240 //макс напр сети по умолч
+#define DEFAULT_MIN 190 //мин напр сети по умолч
+#define DEFAULT_CONTRAST 60 // контраст Н3310 индикатора по умолч
 
 
 #include "menu.h"
 
 #define F_CPU 8000000UL  
 
-#define Coeff (16/3.04)  //Коэффициент пропорциональности напряжения
+#define Coeff (16/1.56)  //Коэффициент пропорциональности напряжения
 #define RmsP2(V) ((unsigned int)(((double)V)*V/Coeff/Coeff)) // макрос перевода вольт в попугаи
 
 #define PinOn _BV(PB1)   // пин реле включения нагрузки
 #define PinOnPORT PORTB
 
+#define PinAlarm _BV(PB0)
+#define PortAlarm PORTB
+
+#if defined(DISPLAY_N3310)
+#define  PortLight PORTD
+#define  PinLight  _BV(PD6)
+uint16_t  CounterLight;
+#endif
+
+uint16_t ResetCounter;
+
 static  void check_keys(void);
 
 unsigned char CurrentDigit; // Текущая отображаемая цифра
 volatile uint8_t Display[3]; //отображаемые цифры ( диапазон 0 - 9)
+
+#if defined(DISPLAY_N3310)
+uint8_t DisplayOld[3]; //отображаемые цифры ( диапазон 0 - 9)
+#endif
 
 uint8_t CurrentLast = 0;//Где в массиве лежит последнее значение
 
@@ -40,6 +60,10 @@ EEMEM uint16_t ee_U_max = DEFAULT_MAX;		//максимальное наряжение сети
 EEMEM uint16_t ee_U_min = DEFAULT_MIN;		//минимальное напряжение сети
 EEMEM uint16_t ee_zadergka = 100;	//времья задержки на включение
 EEMEM uint16_t ee_filter = 0;		//времья нечувствительности колебаний сетевого напряжения
+#if defined(DISPLAY_N3310)
+EEMEM uint8_t ee_contrast = DEFAULT_CONTRAST;
+uint8_t Contrast;
+#endif /* DISPLAY_N3310 */
 
 volatile uint16_t U_max;  //максимальное наряжение сети
 volatile uint16_t U_min; //минимальное напряжение сети
@@ -53,7 +77,7 @@ volatile int tm1 = 0;
 volatile char key_code = 0;
 
 
-
+#if !defined(DISPLAY_N3310)
 #define SHIFT595 _BV(PD7)
 #define DATA595  _BV(PD5)
 #define STORE595 _BV(PD6)
@@ -66,7 +90,7 @@ volatile char key_code = 0;
 #define DIG3 _BV(PD2)
 #define DIG4 _BV(PD4)
 #define DIGPORT PORTD
-
+#endif
 
 
 #define SEG_A 0x04
@@ -91,11 +115,15 @@ const unsigned char digit[11]=
  SEG_A|SEG_B|SEG_C|SEG_D|SEG_E|SEG_F|SEG_G, //8
  SEG_A|SEG_B|SEG_C|SEG_D|SEG_F|SEG_G,//9
  0x00,}; // откл.  
+
+#if !defined(DISPLAY_N3310)
 #if !defined(DISPLAY_OA)
 const unsigned char DigitLine[3] = {~DIG3, ~DIG1, ~DIG2 }; //Какую цифру отображать                                                                  
 #else
 const unsigned char DigitLine[3] = {DIG3, DIG1, DIG2 }; //Какую цифру отображать                                                                  
 #endif
+#endif /* DISPLAY_N3310 */
+
 long Summ; // Накопитель квадратов
 volatile long LastSumm; // Здесь накопленный результат передается в main
 int Counts; //Накопитель количества измерений
@@ -121,7 +149,7 @@ static void Decoder_display(int DataForLed) //Преобразование числа в строку для 
   {
      uint8_t Dig = DataForLed/Div;
 
-     if ( Dig == 0 && OnFlag == 0)
+     if ( Dig == 0 && OnFlag == 0 && i != 1)
      {
        *Pointer = 0; //отключить незначущийся ноль
      }
@@ -162,6 +190,7 @@ static void Regulator (void)
    
 
   PinOnPORT |= PinOn;    // Включить выход
+  PortAlarm &= ~PinAlarm;
 //  {
 //    uint16_t Out = (uint16_t)(sqrt(ImmediateValue)*Coeff); //Out moving average value
 
@@ -175,23 +204,28 @@ D0: // все выкл
   Timer = 0;         // Сброс таймера задержки включения
   RelayCounter = 0;
   PinOnPORT &= ~PinOn;   // ОТКЛЮЧИТЬ ВСЕ РЕЛЕ И НАГРУЗКУ!!!
+  PortAlarm |= PinAlarm; 
 }
 
 
-static void Init (void)
+static void Init(void)
 {
 // Input/Output Ports initialization
 // Port B initialization
 	PORTB=0x00;
-	DDRB=PinOn;
+	DDRB=(PinOn|PinAlarm);
 
 // Port C initialization
 	PORTC=~_BV(PC0); // PC0 - АЦП без подтяжки
 	DDRC=0x02; // ALARM is out
 
 // Port D initialization
+#if !defined(DISPLAY_N3310)
 #if !defined(DISPLAY_OA)
 	PORTD=0xFF;                                                         
+#else
+	PORTD=0x00;                                                         
+#endif
 #else
 	PORTD=0x00;                                                         
 #endif
@@ -232,7 +266,7 @@ static void Init (void)
 // ADC initialization
 // ADC Clock frequency: 125,000 kHz
 // ADC Voltage Reference: Int., cap. on AREF
-	ADMUX=_BV(REFS1)|_BV(REFS0); /* 2.56v reference & ADC0 */
+	ADMUX=/*_BV(REFS1)|*/_BV(REFS0); /* --2.56v--- reference & ADC0 */
 	ADCSRA=_BV(ADEN)|_BV(ADSC)|_BV(ADFR)|_BV(ADIE)|_BV(ADPS1)|_BV(ADPS2);  // div64
 // ADCSRA=_BV(ADEN)|_BV(ADSC)|_BV(ADFR)|_BV(ADIE)|_BV(ADPS0)|_BV(ADPS2);  // div32
 
@@ -269,6 +303,16 @@ static void Init (void)
         {
           t_filter = 0;
         }
+#if defined(DISPLAY_N3310)
+#if !defined(DEBUG_EE)
+	Contrast = eeprom_read_byte( &ee_contrast);
+        if ( Contrast == 0xFF )
+#endif
+          Contrast = 60;  
+	      LcdInit(Contrast);
+        LcdClear();
+#endif /*DISPLAY_N3310 */
+
 }
 
 long AvSum16=580000L;  // это усредненное значение
@@ -283,8 +327,63 @@ static uint8_t PrevFunc;       // Previous function.
 #define DELAY_FUNCTION 5
 #define FILTER_FUNCTION 6
 #define SAVED_FUNCTION 7
+#define CONTRAST_FUNCTION 8
 
-uint16_t Value;
+int16_t Value;
+
+#if defined(DISPLAY_N3310)
+void ContrastFunction(void)
+{
+  if (Event == EV_FUNC_FIRST)
+  {
+    goto redraw;
+  }
+  if ( (Event & KEY_MASK) == KEY_ENTER )
+  {
+    if ( ((Event & EV_MASK) == EV_KEY_LONG) || 
+         ((Event & EV_MASK) == EV_KEY_REALIZED))
+    {
+      if ( (Event & EV_MASK) == EV_KEY_LONG)
+      {
+        eeprom_write_byte( &ee_contrast, Contrast);
+        CurrentFunc = SAVED_FUNCTION;
+        return;
+      }
+        CurrentFunc = MENU_FUNCTION;
+      return;
+    }
+    return;
+  }
+
+  if ( (Event & EV_MASK) == EV_KEY_PRESSED ||
+       (Event & EV_MASK) == EV_KEY_REPEATE)
+  {
+    if ( (Event & KEY_MASK) == KEY_UP )
+    {
+      if ( Contrast < 90 )
+        Contrast++;
+    }
+    else if ( (Event & KEY_MASK) == KEY_DOWN )
+    {
+      if ( Contrast > 10 )
+        Contrast--;
+    }
+    LcdContrast(Contrast);
+  }
+
+redraw:
+  if (DisplayCounter >= 0 )
+  { 
+    Decoder_display(Contrast);
+    DisplayCounter = 0;
+  }
+  else
+    DisplayCounter++;
+
+}
+#endif /*DISPLAY_N3310 */
+
+
 
 void SavedFunction(void)
 {
@@ -517,7 +616,7 @@ void FilterFunction(void)
     }
     else if ( (Event & KEY_MASK) == KEY_DOWN )
     {
-      if ( Value >= 0 )
+      if ( Value > 0 )
         Value--;
     }
   }
@@ -543,11 +642,19 @@ void MainFunction(void)
   }
   if ( (Event & EV_MASK) == EV_KEY_PRESSED )
   {
-    if ( (Event & KEY_MASK) == KEY_DOWN )
+    if ( (Event & KEY_MASK) == KEY_UP )
     {
       CurrentFunc = HERTZ_FUNCTION;
       return;
     }
+#if defined(DISPLAY_N3310)
+    if ( (Event & KEY_MASK) == KEY_DOWN )
+    {
+      PortLight |= PinLight;
+      CounterLight=3000; // 1 min
+      return;
+    }
+#endif
     MenuCounter = 0;
     CurrentFunc = MENU_FUNCTION;
     return;
@@ -563,6 +670,12 @@ redraw:
   }
   else
     DisplayCounter++;
+#if defined(DISPLAY_N3310)
+  if (CounterLight)
+    CounterLight--;
+  else
+    PortLight &= ~PinLight;
+#endif
 }
 
 void HertzFunction(void)
@@ -608,7 +721,11 @@ static void MenuFunction(void)
     switch (Event & KEY_MASK)
     {
       case KEY_UP:
+#if defined(DISPLAY_N3310)
+        if ( MenuCounter < 5 )
+#else
         if ( MenuCounter < 4 )
+#endif
           MenuCounter++;
         else
           MenuCounter = 0;
@@ -617,7 +734,11 @@ static void MenuFunction(void)
         if ( MenuCounter > 0 )
           MenuCounter--;
         else
+#if defined(DISPLAY_N3310)
+          MenuCounter = 5;
+#else
           MenuCounter = 4;
+#endif
         break;
       case KEY_ENTER:
          switch (MenuCounter)
@@ -634,6 +755,11 @@ static void MenuFunction(void)
            case 4:
              CurrentFunc = FILTER_FUNCTION;
              return;
+#if defined(DISPLAY_N3310)
+           case 5:
+             CurrentFunc = CONTRAST_FUNCTION;
+             return;
+#endif /*DISPLAY_N3310 */
          }
          CurrentFunc = MAIN_FUNCTION;
          return;
@@ -666,18 +792,202 @@ redraw:
      Display[0] = SEG_A|SEG_E|SEG_F|SEG_G; // F
      Display[1] = SEG_E; // i
      break;
+#if defined (DISPLAY_N3310)
+    case 5:
+     Display[0] = SEG_A|SEG_D|SEG_E|SEG_F; // C
+     Display[1] = SEG_C|SEG_D|SEG_E|SEG_G; // o
+     break;
+#endif /*DISPLAY_N3310 */
   }
 }
 
 
 const MenuFunction_t FuncArray[] = {MainFunction, 
   HertzFunction,MenuFunction, HiFunction, LoFunction,
-  DelayFunction,FilterFunction,SavedFunction}; // Array of functions of the menu
+  DelayFunction,FilterFunction,SavedFunction
+#if defined (DISPLAY_N3310)
+  ,ContrastFunction
+#endif /*DISPLAY_N3310 */
+  }; // Array of functions of the menu
 
+
+
+#if defined(DISPLAY_N3310)
+
+void OutVBar(uint8_t xoff, uint8_t yoff, uint8_t data)
+{
+  uint8_t i;
+
+  LcdGotoXY(xoff, yoff);
+  for(i=0; i < 6; i++)
+    LcdSend(data, LCD_DATA);
+
+  LcdGotoXY(xoff, yoff+1);
+  for(i=0; i < 6; i++)
+    LcdSend(data, LCD_DATA);
+}
+
+void Draw(uint8_t dig)
+{
+  uint8_t Off = dig*28;
+  uint8_t Char = Display[dig];
+  uint8_t i;
+  uint8_t Out;
+//  LcdChr ( Y_POSITION*1+X_POSITION*1+13, "Hello world" );
+  
+  if (!(Char & SEG_A))
+  {
+    Out = 0x00;
+    LcdGotoXY(Off, 0);
+    for(i=0; i < 24; i++)
+      LcdSend(Out, LCD_DATA);
+  }
+
+
+  if (!(Char & SEG_G))
+  {
+    Out = 0x00;
+    LcdGotoXY(Off+6, 2);
+    for(i=0; i < 12; i++)
+      LcdSend(Out, LCD_DATA);
+  }
+
+  if (!(Char & SEG_D))
+  {
+    Out = 0x00;
+    LcdGotoXY(Off, 4);
+    for(i=0; i < 24; i++)
+      LcdSend(Out, LCD_DATA);
+  }
+
+
+
+  if (!(Char & SEG_B) )
+  {
+    Out=0x00;
+    OutVBar(Off+18, 0, Out);
+  }
+  
+  if (!(Char & SEG_C))
+  {
+    Out=0x00;
+    OutVBar(Off+18, 3, Out);
+  }
+
+  if (!(Char & SEG_E))
+  {
+    Out=0x00;
+    OutVBar(Off, 3, Out);
+  }
+
+  if (!(Char & SEG_F))
+  {
+    Out=0x00;
+    OutVBar(Off, 0, Out);
+  }
+ 
+
+  if (Char & SEG_A)
+  {
+    Out = 0x3F;
+    LcdGotoXY(Off, 0);
+    for(i=0; i < 24; i++)
+      LcdSend(Out, LCD_DATA);
+  }
+  
+  if (Char & SEG_G )
+  {
+    Out = 0x7e;
+    LcdGotoXY(Off+6, 2);
+    for(i=0; i < 12; i++)
+      LcdSend(Out, LCD_DATA);
+  }
+
+  if ( (Char & SEG_G) )
+  {
+    Out = 0x7e;
+    if (Char & SEG_F )
+      Out |= 0x01;
+    if (Char & SEG_E )
+      Out |= 0x80;
+  }
+  else
+  {
+    Out = 0x00;
+    if (Char & SEG_F )
+      Out |= 0xFE;
+    if (Char & SEG_E )
+      Out |= 0x7F;
+  }
+  LcdGotoXY(Off, 2);
+  for(i=0; i < 6; i++)
+    LcdSend(Out, LCD_DATA);
+
+
+  if ( (Char & SEG_G) )
+  {
+    Out = 0x7e;
+    if (Char & SEG_B )
+      Out |= 0x01;
+    if (Char & SEG_C )
+      Out |= 0x80;
+  }
+  else
+  {
+    Out = 0x00;
+    if (Char & SEG_B )
+      Out |= 0x7F;
+    if (Char & SEG_C )
+      Out |= 0xFE;
+  }
+  LcdGotoXY(Off+18, 2);
+  for(i=0; i < 6; i++)
+    LcdSend(Out, LCD_DATA);
+
+
+  if (Char & SEG_D )
+  {
+    Out = 0xfc;
+    LcdGotoXY(Off, 4);
+    for(i=0; i < 24; i++)
+      LcdSend(Out, LCD_DATA);
+  }
+
+  if (Char & SEG_B )
+  {
+    Out=0xFF;
+    OutVBar(Off+18, 0, Out);
+  }
+  if (Char & SEG_C )
+  {
+    Out=0xFF;
+    OutVBar(Off+18, 3, Out);
+  }
+
+  if (Char & SEG_E )
+  {
+    Out=0xFF;
+    OutVBar(Off, 3, Out);
+  }
+  if (Char & SEG_F )
+  {
+    Out=0xFF;
+    OutVBar(Off, 0, Out);
+  }
+  if (Char & SEG_H )
+    Out=0x7E;
+  else
+    Out=0x00;
+  LcdGotoXY(Off+22, 5);
+  for(i=0; i < 4; i++)
+    LcdSend(Out, LCD_DATA);
+}
+#endif
 
 
 //*********************************************************
 
+uint8_t RedrawFlag;
 
 void main(void)
 {
@@ -722,7 +1032,32 @@ void main(void)
       }
 
       FuncArray[CurrentFunc]();      // Run the current menu function
+      RedrawFlag = 0;
     }
+#if defined(DISPLAY_N3310)
+    else
+    {
+      if(RedrawFlag == 0)
+      {
+        RedrawFlag = 1;
+        if(Display[0] != DisplayOld[0])
+        {
+          Draw(0);
+          DisplayOld[0] = Display[0];
+        }
+        if(Display[1] != DisplayOld[1])
+        {
+          Draw(1);
+          DisplayOld[1] = Display[1];
+        }
+        if(Display[2] != DisplayOld[2])
+        {
+          Draw(2);
+          DisplayOld[2] = Display[2];
+        }
+      }
+    }
+#endif
  }
 } // end main
 
@@ -749,6 +1084,14 @@ static  void check_keys(void)
   
   if ( EventQueue != 0 ) /* Previous event hasn't been handled */
     return;
+  if (ResetCounter != 0)
+  {
+    ResetCounter--;
+    if (ResetCounter == 1)
+    {
+      CurrentFunc = MAIN_FUNCTION;
+    }
+  }
 
   Key = (~KEYPORT) & KEY_MASK; /* Read the port */
 
@@ -791,6 +1134,7 @@ static  void check_keys(void)
       {
       /* Generate KEY TOUCH event */
         EventQueue = EV_KEY_TOUCH + PrevKey;
+        ResetCounter = 3000;
       }
       else if ( EvCounter > KEY_LONG_VALUE ) // Delay after first press is not long
         EventQueue = EV_KEY_LONG | PrevKey; //generate key press event
@@ -860,6 +1204,7 @@ ISR (ADC_vect)
   // передвинуть место сохранения измерения
   CurrentLast = (CurrentLast + 1) & 0x7; /* from 0 to 7 */
 
+#if !defined(DISPLAY_N3310)
   //Обновление индикатора
   SHIFT595PORT &= ~SHIFT595;
   if (Counter595 >= 0 )
@@ -900,4 +1245,6 @@ ISR (ADC_vect)
     DIGPORT |= DigitLine[CurrentDigit]; //подключили соотв общий катод
 #endif
   }
+#endif /* DISPLAY_N3310 */
+
 }

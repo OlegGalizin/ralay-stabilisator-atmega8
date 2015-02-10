@@ -70,7 +70,7 @@ FORMAT = ihex
 
 
 # Target file name (without extension).
-TARGET = stabilizator-1
+TARGET = rms
 
 
 # Object files directory
@@ -80,7 +80,7 @@ OBJDIR = .
 
 
 # List C source files here. (C dependencies are automatically generated.)
-SRC = $(TARGET).c 
+SRC = stabilizator-1.c n3310.c
 
 
 # List C++ source files here. (C dependencies are automatically generated.)
