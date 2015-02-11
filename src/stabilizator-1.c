@@ -34,8 +34,8 @@
 #define PinOn _BV(PB1)   // пин реле включения нагрузки
 #define PinOnPORT PORTB
 
-#define PinAlarm _BV(PB0)
-#define PortAlarm PORTB
+#define PinAlarm _BV(PC1)
+#define PortAlarm PORTC
 
 #if defined(DISPLAY_N3310)
 #define  PortLight PORTD
