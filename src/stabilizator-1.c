@@ -22,6 +22,8 @@
 #define DEFAULT_MAX 240 //макс напр сети по умолч
 #define DEFAULT_MIN 190 //мин напр сети по умолч
 #define DEFAULT_CONTRAST 60 // контраст Н3310 индикатора по умолч
+#define DEFAULT_DELAY 100 //Задержка включения 2 сек
+#define DEFAULT_FILTER 5 // 5 периодов пропустить перед откл
 
 
 #include "menu.h"
@@ -58,8 +60,9 @@ uint8_t CurrentLast = 0;//Где в массиве лежит последнее значение
 
 EEMEM uint16_t ee_U_max = DEFAULT_MAX;		//максимальное наряжение сети
 EEMEM uint16_t ee_U_min = DEFAULT_MIN;		//минимальное напряжение сети
-EEMEM uint16_t ee_zadergka = 100;	//времья задержки на включение
-EEMEM uint16_t ee_filter = 0;		//времья нечувствительности колебаний сетевого напряжения
+EEMEM uint16_t ee_zadergka = DEFAULT_DELAY;	//времья задержки на включение
+EEMEM uint16_t ee_filter = DEFAULT_FILTER;		//времья нечувствительности колебаний сетевого напряжения
+
 #if defined(DISPLAY_N3310)
 EEMEM uint8_t ee_contrast = DEFAULT_CONTRAST;
 uint8_t Contrast;
@@ -293,7 +296,7 @@ static void Init(void)
         if ( zadergka == 0xFFFF )
 #endif
         {
-          zadergka = 100;
+          zadergka = DEFAULT_DELAY;
         }
 	
 #if !defined(DEBUG_EE)
@@ -301,8 +304,9 @@ static void Init(void)
         if ( t_filter == 0xFFFF )
 #endif
         {
-          t_filter = 0;
+          t_filter = DEFAULT_FILTER;
         }
+
 #if defined(DISPLAY_N3310)
 #if !defined(DEBUG_EE)
 	Contrast = eeprom_read_byte( &ee_contrast);
