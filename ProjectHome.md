@@ -1,0 +1,1 @@
+Power stabilisator and RMS voltmeter http://radiokot.ru/circuit/power/converter/26/
